@@ -164,12 +164,17 @@ class LearnedInput(tf.keras.layers.Layer):
 
 
 class NoiseInput(tf.keras.layers.Layer):
-    def __init__(self, shape=None, per_pixel=False, **kwargs):
+    def __init__(self, shape=None, constant=False, per_pixel=False, **kwargs):
         self.per_pixel = per_pixel
+        self.constant = constant
         if shape is None:
             self.shape = [4, 4, 512]
         else:
             self.shape = shape
+
+        self.constant = constant
+        if constant:
+            self.noise_image = tf.constant(np.random.normal(0., 1., [1, self.shape[0]*self.shape[1]]), dtype=tf.float32)
         super(NoiseInput, self).__init__(**kwargs)
 
     def build(self, input_shape=None):
@@ -182,7 +187,10 @@ class NoiseInput(tf.keras.layers.Layer):
                                               dtype=tf.float32, trainable=True)
 
     def call(self, input=None):
-        noise_image = tf.random_normal([1, self.shape[0]*self.shape[1]], 0., 1., dtype=tf.float32)
+        if self.constant:
+            noise_image = self.noise_image
+        else:
+            noise_image = tf.random_normal([1, self.shape[0]*self.shape[1]], 0., 1., dtype=tf.float32)
         if self.per_pixel:
             x = tf.matmul(noise_image, self.scale_factor)
         else:
@@ -223,7 +231,7 @@ class IntermediateLatentToStyle(tf.keras.Model):
 class Generator(tf.keras.Model):
     def __init__(self, res_w, output_res_w=None, use_pixel_norm=False, equalized_lr=True, use_mapping_network=True,
                  traditional_input=False, add_noise=True, start_shape=(4, 4), resize_method='bilinear',
-                 cond_layers=None, map_cond=False):
+                 cond_layers=None, map_cond=False, include_fmap_add_ops=False, constant_noise=False):
         super(Generator, self).__init__()
         if output_res_w is None:
             self.output_res_w = res_w
@@ -237,6 +245,7 @@ class Generator(tf.keras.Model):
         self.start_shape = start_shape
         self.cond_layers = cond_layers
         self.map_cond = map_cond
+        self.include_fmap_add_ops = include_fmap_add_ops
         if not traditional_input:
             self.learned_input = LearnedInput(shape=[start_shape[0],
                                                      start_shape[1], 512], name="learned_input")  # todo: move to 4x4x512
@@ -244,9 +253,9 @@ class Generator(tf.keras.Model):
             self.learned_input = None
         if res_w > 4:
             self.toRGB_lower = Conv2D(3, [1, 1], padding='valid',
-                                      equalized_lr=equalized_lr, name="rgb-%d" % (res_w // 2))
+                                      equalized_lr=equalized_lr, name="toRGB%d" % (res_w // 2))
         self.toRGB = Conv2D(3, [1, 1], padding='valid',
-                            equalized_lr=equalized_lr, name="rgb-%d" % res_w)
+                            equalized_lr=equalized_lr, name="toRGB%d" % res_w)
         self.model_layers = []
         res_h = start_shape[0]
         res_w = start_shape[1]
@@ -261,29 +270,31 @@ class Generator(tf.keras.Model):
                 first_conv = Conv2D(filters, [4, 4],
                                     padding='valid',
                                     equalized_lr=equalized_lr,
-                                    name="convolution-1-%d" % res_w,
+                                    name="convRes%d_1" % res_w,
                                     use_bias=False)
             else:
                 first_conv = Conv2D(filters, [3, 3],
                                     padding='same',
                                     equalized_lr=equalized_lr,
-                                    name="convolution-2-%d" % res_w,
+                                    name="convRes%d_1" % res_w,
                                     use_bias=False)
 
             self.model_layers.append([first_conv,
-                                     NoiseInput(shape=[res_h, res_w, filters], name="noise-1-%d" % res_w)
+                                     NoiseInput(shape=[res_h, res_w, filters],
+                                                constant=constant_noise, name="Noise%d_1" % res_w)
                                       if self.add_noise else None,
-                                      BiasLayer(name="bias-1-%d" % res_w),
-                                     IntermediateLatentToStyle(filters, name="latent_style-1-%d" % res_w)
+                                      BiasLayer(name="Bias%d_1" % res_w),
+                                     IntermediateLatentToStyle(filters, name="ILS%d_1" % res_w)
                                       if self.use_mapping_network else None,
                                      Conv2D(filters, [3, 3], padding='same',
                                             equalized_lr=equalized_lr,
-                                            name="convolution-2-%d" % res_w,
+                                            name="convRes%d_2" % res_w,
                                             use_bias=False),
-                                     NoiseInput(shape=[res_h, res_w, filters], name="noise-2-%d" % res_w )
+                                     NoiseInput(shape=[res_h, res_w, filters],
+                                                constant=constant_noise, name="Noise%d_2" % res_w )
                                       if self.add_noise else None,
-                                      BiasLayer(name="bias-2-%d" % res_w),
-                                     IntermediateLatentToStyle(filters, name="latent_style-2-%d" % res_w)
+                                      BiasLayer(name="Bias%d_2" % res_w),
+                                     IntermediateLatentToStyle(filters, name="ILS%d_2" % res_w)
                                       if self.use_mapping_network else None])
             res_h *= 2
             res_w *= 2
@@ -319,7 +330,7 @@ class Generator(tf.keras.Model):
             for z in zs:
                 z_shape = z.get_shape().as_list()
                 if self.use_pixel_norm:
-                    z = pixel_norm(z)  # todo: verify correct (used in keras implementation)
+                    z = pixel_norm(z)  # todo: verify correct
                 if len(z_shape) == 2:  # [batch size, z dim]
                     if self.map_cond and cgan_w is not None:
                         z = tf.concat([z, cgan_w], -1)
@@ -356,6 +367,7 @@ class Generator(tf.keras.Model):
             return x
         current_res = self.start_shape[1]
 
+        # Inefficient implementation, will have to redo
         with tf.name_scope("style_mixing"):
             intermediate_for_layer_list = []
             if random_crossover:
@@ -393,16 +405,18 @@ class Generator(tf.keras.Model):
         #     crossover_layer = tf.random_uniform([tf.shape(intermediate_ws[0])[0], 1], 0, len(self.model_layers),
         #                                         dtype=tf.int32)
         for conv1, noise1, bias1, tostyle1, conv2, noise2, bias2, tostyle2 in self.model_layers:
-            with tf.name_scope("resolution%d"%current_res):
+            with tf.name_scope("Res%d"%current_res):
                 #apply_conditioning = intermediate_latent_cond is not None and \
                 #    (self.cond_layers is None or
                 #     layer_counter in self.cond_layers)
                 apply_conditioning = False
 
+                if (self.include_fmap_add_ops):
+                    x += tf.zeros([tf.shape(x)], dtype=tf.float32, name="FmapRes%d")
                 if layer_counter != 0 or self.learned_input is None:
                     x = conv1(x)
                 if self.add_noise:
-                    with tf.name_scope("noise_add-1"):
+                    with tf.name_scope("noise_add1"):
                         noise_inputs = noise1(False)
                         assert(x.get_shape().as_list()[1:] == noise_inputs.get_shape().as_list()[1:])
                         x += noise_inputs
@@ -424,7 +438,7 @@ class Generator(tf.keras.Model):
                 if self.use_pixel_norm:
                     x = pixel_norm(x)
                 if self.add_noise:
-                    with tf.name_scope("noise_add-2"):
+                    with tf.name_scope("noise_add2"):
                         noise_inputs = noise2(False)
                         assert(x.get_shape().as_list()[1:] == noise_inputs.get_shape().as_list()[1:])
                         x += noise_inputs
@@ -471,17 +485,17 @@ class Discriminator(tf.keras.Model):
             if current_res == end_shape[1]:
                 conv_layers.append([Conv2D(current_filters, end_shape, padding='same',
                                            equalized_lr=equalized_lr,
-                                           name="convolution-1-%d" % current_res),
+                                           name="convRes%d_1" % current_res),
                                     Conv2D(current_filters, end_shape, padding='valid',
                                            equalized_lr=equalized_lr,
-                                           name="convolution-2-%d" % current_res)])
+                                           name="convRes%d_2" % current_res)])
             else:
                 conv_layers.append([Conv2D(current_filters // 2 if current_res > 32 else current_filters,
                                            [3, 3], padding='same', equalized_lr=equalized_lr,
-                                           name="convolution-1-%d" % current_res),
+                                           name="convRes%d_1" % current_res),
                                     Conv2D(current_filters,
                                            [3, 3], padding='same', equalized_lr=equalized_lr,
-                                           name="convolution-2-%d" % current_res)])
+                                           name="convRes%d_2" % current_res)])
             if current_res > 32:
                 current_filters = current_filters // 2
             current_res *= 2
@@ -491,14 +505,14 @@ class Discriminator(tf.keras.Model):
         if res > 4:
             self.fromRGB_lower = Conv2D(current_filters if current_filters == 512 else current_filters*2,
                                         [1, 1], padding='valid', equalized_lr=equalized_lr,
-                                        name="rgb-%d" % (res // 2))
+                                        name="fromRGB%d" % (res // 2))
         self.fromRGB = Conv2D(current_filters, [1, 1], padding='valid',
-                              equalized_lr=equalized_lr, name="rgb-%d" % res)
-        self.fc_layer = Dense(1, equalized_lr=equalized_lr, gain=1, name="dense")
+                              equalized_lr=equalized_lr, name="fromRGB%d" % res)
+        self.fc_layer = Dense(1, equalized_lr=equalized_lr, gain=1, name="fc_layer")
         if cgan_nclasses is not None:
             if label_list is None:
                 self.embedding = Dense(cgan_nclasses, equalized_lr=equalized_lr, gain=1,
-                                       use_bias=False, name="embed")
+                                       use_bias=False, name="embedding_layer")
             else:
                 self.class_dense_map = {}
                 for label in label_list:
