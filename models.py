@@ -449,9 +449,9 @@ class Generator(tf.keras.Model):
                     ys, yb = tostyle2(intermediate_latent_cond)
                 else:
                     if style_mixing:
-                        ys, yb = tostyle1(intermediate_for_layer_list[layer_counter])
+                        ys, yb = tostyle2(intermediate_for_layer_list[layer_counter])
                     else:
-                        ys, yb = tostyle1(intermediate_ws[0])
+                        ys, yb = tostyle2(intermediate_ws[0])
                 x = adaptive_instance_norm(x, ys, yb)
 
                 if current_res == self.model_res_w // 2:
