@@ -146,6 +146,8 @@ if __name__ == "__main__":
                                 help="lambda for drift penalty: penalizes high output values")
     training_group.add_argument("--ncritic", type=int, default=1,
                                 help="# discriminator runs per generator run")
+    training_group.add_argument("--ngpus", type=int, default=1,
+                                help="# of gpus to use")
     training_group.add_argument("--steps_per_save", type=int, default=None,
                                 help="# steps between saving the model, defaults to end of phase")
     training_group.add_argument("--no_train", action='store_true', default=False,
@@ -182,6 +184,15 @@ if __name__ == "__main__":
     np.set_printoptions(suppress=True)  # prevents scientific notation prints
     args = parser.parse_args()
 
+    ngpus = args.ngpus
+    if args.ngpus > 1:
+        try:
+            import horovod.tensorflow as hvd
+            hvd.init()
+        except ImportError:
+            print("horovod not available, can only use 1 gpu")
+            ngpus = 1
+
     if args.cuda_visible_devices is not None:
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
@@ -197,7 +208,10 @@ if __name__ == "__main__":
         if title == "":
             title = "TESTING"
         print("Title: %s" % title)
-        generated_dir = title+"_stylegan_"+datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        if ngpus > 1:
+            generated_dir = title+"_stylegan_"+str(hvd.rank())+"_"+datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        else:
+            generated_dir = title+"_stylegan_"+datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         model_dir = os.path.join(
             args.model_dir,
             generated_dir)
@@ -307,7 +321,8 @@ if __name__ == "__main__":
         cond_layers=cond_layers,
         map_cond=args.map_cond,
         cond_uniform_fake=args.cond_uniform_fake,
-        use_beholder=args.beholder)
+        use_beholder=args.beholder,
+        ngpus=ngpus)
     #print("Hyperparameters:")
     #print(pprint(dict(vars(hps))))
     print("Model dir: %s" % model_dir)

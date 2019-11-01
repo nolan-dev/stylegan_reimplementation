@@ -30,7 +30,8 @@ def make_record_dataset(files, batch_size):
     return dataset
 
 
-def make_record_dataset_nvidia(files, current_res, batch_size, label_list=None):
+def make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res,
+                               label_list=None, num_shards=None, shard_index=None):
     """
     :param files: list of paths containing tfrecords files to read into dataset
     :return: dataset that reads those files
@@ -58,13 +59,16 @@ def make_record_dataset_nvidia(files, current_res, batch_size, label_list=None):
         return example
 
     dataset = tf.data.TFRecordDataset([f for f in files if "res%d" % current_res in f])
+    if num_shards is not None:
+        dataset = dataset.shard(num_shards, shard_index)
+    dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=2000, count=epochs_per_res))
     dataset = dataset.apply(tf.data.experimental.map_and_batch(input_parser_record,
                                                                batch_size, drop_remainder=True,
                                                                num_parallel_batches=4))
     return dataset
 
 
-def get_dataset(files, current_res, epochs_per_res, batch_size, label_list=None):
+def get_dataset(files, current_res, epochs_per_res, batch_size, label_list=None, num_shards=None, shard_index=None):
     """
     :param files_regex: path specifying which files to read (example: ./data/*.jpg)
     :return: dataset that reads those files
@@ -72,9 +76,9 @@ def get_dataset(files, current_res, epochs_per_res, batch_size, label_list=None)
     if ".png" in files[0] or ".jpg" in files[0]:
         dataset = make_raw_dataset(files)
     elif ".tfrecords" in files[0]:
-        dataset = make_record_dataset_nvidia(files, current_res, batch_size, label_list=label_list)
+        dataset = make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res, label_list=label_list,
+                                             num_shards=num_shards, shard_index=shard_index)
     else:  # TODO: make compatible with list of patterns
         raise ValueError("files_regex looks for unknown file types")
-    dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=2000, count=epochs_per_res))
     dataset = dataset.prefetch(batch_size)
     return dataset

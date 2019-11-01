@@ -9,7 +9,7 @@ from tensorflow.python.tools import freeze_graph
 from PIL import Image
 from utils import build_label_list_from_file
 from train import build_models
-from train import restore_models_and_optimizers_and_alpha, TrainHps
+from train import restore_models_and_optimizers, TrainHps
 
 # todo: shouldn't this be run when importing train?
 TrainHps.__new__.__defaults__ = (None,) * len(TrainHps._fields)
@@ -28,8 +28,8 @@ def save_sampling_graph(hps, save_paths, graph_dir):
     sample_img_tensor = sampling_model(1., intermediate_ws=intermediate_w)
     saver = tf.train.Saver()
     with tf.Session() as sess:
-        alpha = restore_models_and_optimizers_and_alpha(sess, None, None, mapping_network,
-                                                        sampling_model, None, None, None, save_paths)
+        restore_models_and_optimizers(sess, None, None, mapping_network,
+                                      sampling_model, None, None, None, save_paths)
         sample_img_tensor = tf.clip_by_value(sample_img_tensor, -1., 1.)  # essential due to how tf.summary.image scales values
         sample_img_tensor = tf.cast((sample_img_tensor+1)*127.5, tf.uint8, name="out")
         #png_tensor = tf.image.encode_png(tf.squeeze(sample_img_tensor, axis=0), name="output")
@@ -140,8 +140,8 @@ def sample_style_mix(hps, sess, mix_layer):
     sample_img_mix = sampling_model(1.,
                                     intermediate_ws=[intermediate_w1, intermediate_w2],
                                     crossover_list=[mix_layer])
-    alpha = restore_models_and_optimizers_and_alpha(sess, None, None, mapping_network,
-                                                    sampling_model, None, None, None, hps.save_paths)
+    restore_models_and_optimizers(sess, None, None, mapping_network,
+                                  sampling_model, None, None, None, hps.save_paths)
     return [sample_img1, sample_img2, sample_img_mix], [intermediate_w1, intermediate_w2]
 
 
@@ -177,8 +177,8 @@ def sample(hps, sess):
     average_w = tf.reduce_mean(mapping_network(many_latent), axis=0)
     intermediate_w = average_w + hps.psi_w*(mapping_network(sample_latent) - average_w)
     sample_img = sampling_model(1., intermediate_ws=intermediate_w)
-    alpha = restore_models_and_optimizers_and_alpha(sess, None, None, mapping_network,
-                                                    sampling_model, None, None, None, hps.save_paths)
+    restore_models_and_optimizers(sess, None, None, mapping_network,
+                                  sampling_model, None, None, None, hps.save_paths)
     return sample_img, intermediate_w
 
 
@@ -239,8 +239,8 @@ def sample_with_intermediate(hps_path, intermediate, save_paths):
 
     sample_img_tensor = sampling_model(1., intermediate_ws=intermediate)
     with tf.Session() as sess:
-        alpha = restore_models_and_optimizers_and_alpha(sess, None, None, None,
-                                                        sampling_model, None, None, None, save_paths)
+        restore_models_and_optimizers(sess, None, None, None,
+                                      sampling_model, None, None, None, save_paths)
 
         sample_img_tensor = tf.clip_by_value(sample_img_tensor, -1., 1.)  # essential due to how tf.summary.image scales values
         sample_img_tensor = tf.cast((sample_img_tensor+1)*127.5, tf.uint8)

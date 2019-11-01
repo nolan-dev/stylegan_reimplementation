@@ -5,6 +5,7 @@ from collections import namedtuple
 from shutil import copy, copytree
 from tqdm import trange
 import csv
+import random
 
 import tensorflow as tf
 import numpy as np
@@ -16,7 +17,7 @@ from utils import filter_vars_with_checkpoint, build_label_list_from_file
 
 TrainHps = namedtuple("TrainingHyperparams",
                       ["res_h", "res_w", "current_res_w", "psi_w", "batch_size", "epochs_per_res",
-                       "optimizer", "loss_fn", "profile",
+                       "optimizer", "loss_fn", "profile", "ngpus",
                        "learning_rate", "adam_beta1", "adam_beta2", "use_beholder",
                        "model_dir", "gp_fn", "lambda_gp", "ncritic", "cond_uniform_fake",
                        "do_pixel_norm", "start_res_h", "start_res_w", "map_cond",
@@ -188,11 +189,13 @@ def build_optimizers(hps):
     optimizer_m = build_optimizer_from_hps(hps, lr_multiplier=1.)
     return optimizer_g, optimizer_d, optimizer_m
 
-def build_data_iterator(hps, files, current_res_h, current_res_w, batch_size=None, label_list=None):
-    dataset = get_dataset(files, current_res_w, hps.epochs_per_res, batch_size, label_list=label_list)
+def build_data_iterator(hps, files, current_res_h, current_res_w, batch_size=None, label_list=None,
+                        num_shards=None, shard_index=None):
+    random.shuffle(files)
+    dataset = get_dataset(files, current_res_w, hps.epochs_per_res, batch_size,
+                          label_list=label_list, num_shards=None, shard_index=None)
     it = dataset.make_one_shot_iterator()
     return it
-
 
 @name_scope("optimizer")
 def build_optimizer_from_hps(hps, lr_multiplier=1.):
@@ -243,9 +246,14 @@ def backup_model_for_this_phase(save_paths, writer_path):
         copytree(os.path.dirname(save_paths.mn_optim),
                  os.path.join(writer_path, os.path.basename(os.path.dirname(save_paths.mn_optim))))
 
+def save_alpha_and_step(alpha, step, save_paths):
+    with open(save_paths.alpha, "w") as f:
+        f.write(str(alpha))
+    with open(save_paths.step, "w") as f:
+        f.write(str(step))
 
-def save_models_and_optimizers_and_alpha(sess, alpha, step, gen_model, dis_model, mapping_network, sampling_model,
-                                         optimizer_g, optimizer_d, optimizer_m, save_paths):
+def save_models_and_optimizers(sess, gen_model, dis_model, mapping_network, sampling_model,
+                               optimizer_g, optimizer_d, optimizer_m, save_paths):
     """
     :param sess: session if in graph mode, otherwise unused
     :param alpha: float value for alpha at time of saving
@@ -261,10 +269,6 @@ def save_models_and_optimizers_and_alpha(sess, alpha, step, gen_model, dis_model
     sampling_model.save_weights(save_paths.sampling_model, save_format='h5')
     if mapping_network is not None:
         mapping_network.save_weights(save_paths.mapping_network, save_format='h5')
-    with open(save_paths.alpha, "w") as f:
-        f.write(str(alpha))
-    with open(save_paths.step, "w") as f:
-        f.write(str(step))
     if tf.executing_eagerly():
         saver_d = tf.contrib.eager.Saver(var_list=optimizer_d.variables())
         saver_d.save(file_prefix=save_paths.dis_optim)
@@ -281,9 +285,8 @@ def save_models_and_optimizers_and_alpha(sess, alpha, step, gen_model, dis_model
             saver_g = tf.train.Saver(var_list=optimizer_m.variables())
             saver_g.save(sess=sess, save_path=save_paths.mn_optim)
 
-
-def restore_models_and_optimizers_and_alpha(sess, gen_model, dis_model, mapping_network, sampling_model,
-                                            optimizer_g, optimizer_d, optimizer_m, save_paths):
+def restore_models_and_optimizers(sess, gen_model, dis_model, mapping_network, sampling_model,
+                                  optimizer_g, optimizer_d, optimizer_m, save_paths):
     """
     :param sess: session if in graph mode, otherwise unused
     :param gen_model: generator with defined variables
@@ -342,6 +345,7 @@ def restore_models_and_optimizers_and_alpha(sess, gen_model, dis_model, mapping_
             saver_g.restore(sess=sess,
                             save_path=tf.train.latest_checkpoint(os.path.dirname(save_paths.mn_optim)))
 
+def restore_alpha_and_step(save_paths):
     step = None
     alpha = None
     if save_paths.step is not None:
@@ -352,7 +356,6 @@ def restore_models_and_optimizers_and_alpha(sess, gen_model, dis_model, mapping_
             alpha = float(f.read())
     return alpha, step
 
-
 def weight_following_ema_ops(average_model, reference_model, decay=.99):
     return [tf.assign(average_weight, average_weight*decay + updated_weight*(1-decay)
             if updated_weight.trainable else updated_weight)
@@ -360,6 +363,18 @@ def weight_following_ema_ops(average_model, reference_model, decay=.99):
 
 
 def train(hps, files):
+    ngpus = hps.ngpus
+    config = tf.ConfigProto()
+    if ngpus > 1:
+        try:
+            import horovod.tensorflow as hvd
+            config = tf.ConfigProto()
+            config.gpu_options.visible_device_list = str(hvd.local_rank())
+        except ImportError:
+            hvd = None
+            print("horovod not available, can only use 1 gpu")
+            ngpus = 1
+
     # todo: organize
     current_res_w = hps.current_res_w
     res_multiplier = current_res_w // hps.start_res_w
@@ -420,6 +435,9 @@ def train(hps, files):
             print("Could not import beholder")
             use_beholder = False
     while current_res_w <= hps.res_w:
+        if ngpus > 1:
+            hvd.init()
+        print("building graph")
         if batch_schedule is not None:
             batch_size = batch_schedule[current_res_w]
             print("res %d batch size is now %d" % (current_res_w, batch_size))
@@ -431,8 +449,15 @@ def train(hps, files):
                          label_list=label_list if hps.conditional_type == "acgan" else None)
         with tf.name_scope("optimizers"):
             optimizer_d, optimizer_g, optimizer_m = build_optimizers(hps)
+            if ngpus > 1:
+                optimizer_d = hvd.DistributedOptimizer(optimizer_d)
+                optimizer_g = hvd.DistributedOptimizer(optimizer_g)
+                optimizer_m = hvd.DistributedOptimizer(optimizer_m)
         with tf.name_scope("data"):
-            it = build_data_iterator(hps, files, current_res_h, current_res_w, batch_size, label_list=label_list)
+            num_shards = None if ngpus == 1 else ngpus
+            shard_index = None if ngpus == 1 else hvd.rank()
+            it = build_data_iterator(hps, files, current_res_h, current_res_w, batch_size, label_list=label_list,
+                                     num_shards=num_shards, shard_index=shard_index)
             next_batch = it.get_next()
             real_image = next_batch['data']
 
@@ -585,7 +610,7 @@ def train(hps, files):
         with tf.contrib.tfprof.ProfileContext(hps.model_dir,
                                               trace_steps=[],
                                               dump_steps=[]) as pctx:
-            with tf.Session() as sess:
+            with tf.Session(config=config) as sess:
                 #if hps.tboard_debug:
                 #    sess = tf_debug.TensorBoardDebugWrapperSession(sess, "localhost:6064")
                 #elif hps.cli_debug:
@@ -595,9 +620,16 @@ def train(hps, files):
                 alpha = 1.
                 step = 0
                 if os.path.exists(hps.save_paths.gen_model) and os.path.exists(hps.save_paths.dis_model):
-                    alpha, step = restore_models_and_optimizers_and_alpha(sess, gen_model, dis_model, mapping_network,
-                                                                    sampling_model,
-                                                                    optimizer_g, optimizer_d, optimizer_m, hps.save_paths)
+                    if ngpus == 1 or hvd.rank() == 0:
+                        print("restoring")
+                        restore_models_and_optimizers(sess, gen_model, dis_model, mapping_network,
+                                                      sampling_model,
+                                                      optimizer_g, optimizer_d, optimizer_m, hps.save_paths)
+                if os.path.exists(hps.save_paths.alpha) and os.path.exists(hps.save_paths.step):
+                    alpha, step = restore_alpha_and_step(hps.save_paths)
+                
+                print("alpha")
+                print(alpha)
 
                 if alpha != 1.:
                     alpha_inc = 1. / (hps.epochs_per_res * (num_files / batch_size))
@@ -611,6 +643,10 @@ def train(hps, files):
                 writer.add_summary(image_summary_real.eval(feed_dict={alpha_ph: alpha}), step)
                 print("Starting res %d training" % current_res_w)
                 t = trange(hps.epochs_per_res * num_files // batch_size, desc='Training')
+
+
+                if ngpus > 1:
+                    sess.run(hvd.broadcast_global_variables(0))
                 for phase_step in t:
                     try:
                         for i in range(0, hps.ncritic):
@@ -656,21 +692,25 @@ def train(hps, files):
                                 feed_dict={alpha_ph: alpha}), step)
                             #writer.add_summary(image_summary_fake.eval(
                             #    feed_dict={alpha_ph: alpha}), step)
-                        if hps.steps_per_save is not None and step % hps.steps_per_save == 0:
-                            save_models_and_optimizers_and_alpha(sess, alpha, step,
-                                                                 gen_model, dis_model, mapping_network,
-                                                                 sampling_model,
-                                                                 optimizer_g, optimizer_d, optimizer_m,
-                                                                 hps.save_paths)
+                        if hps.steps_per_save is not None and step % hps.steps_per_save == 0 and (ngpus == 1 or hvd.rank() == 0):
+                            save_models_and_optimizers(sess,
+                                                       gen_model, dis_model, mapping_network,
+                                                       sampling_model,
+                                                       optimizer_g, optimizer_d, optimizer_m,
+                                                       hps.save_paths)
+                            save_alpha_and_step(1. if alpha_inc != 0. else 0., step, hps.save_paths)
                         step += 1
                     except tf.errors.OutOfRangeError:
                         break
                 assert (abs(alpha - 1.) < .1), "Alpha should be close to 1., not %f" % alpha  # alpha close to 1. (dataset divisible by batch_size for small sets)
-                save_models_and_optimizers_and_alpha(sess, 1. if alpha_inc != 0. else 0., step,
-                                                     gen_model, dis_model, mapping_network, sampling_model,
-                                                     optimizer_g, optimizer_d, optimizer_m,
-                                                     hps.save_paths)
-                backup_model_for_this_phase(hps.save_paths, writer_path)
+                if ngpus == 1 or hvd.rank() == 0:
+                    print(1. if alpha_inc != 0. else 0.)
+                    save_models_and_optimizers(sess,
+                                               gen_model, dis_model, mapping_network, sampling_model,
+                                               optimizer_g, optimizer_d, optimizer_m,
+                                               hps.save_paths)
+                    backup_model_for_this_phase(hps.save_paths, writer_path)
+                save_alpha_and_step(1. if alpha_inc != 0. else 0., step, hps.save_paths)
                 #  Will generate Out of range errors, see if it's easy to save a tensor so get_next() doesn't need
                 #  a new value
                 #writer.add_summary(image_summary_real.eval(feed_dict={alpha_ph: 1.}), step)
