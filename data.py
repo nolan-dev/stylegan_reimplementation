@@ -30,7 +30,7 @@ def make_record_dataset(files, batch_size):
     return dataset
 
 
-def make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res,
+def make_record_dataset_nvidia(files, current_res_h, current_res_w, batch_size, epochs_per_res,
                                label_list=None, num_shards=None, shard_index=None):
     """
     :param files: list of paths containing tfrecords files to read into dataset
@@ -47,7 +47,7 @@ def make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res,
 
         decoded = tf.decode_raw(example['data'], tf.uint8)
         #reshaped = tf.transpose(tf.reshape(decoded, example['shape']), [1, 2, 0])
-        reshaped = tf.transpose(tf.reshape(decoded, [3, current_res*2, current_res]), [1, 2, 0])
+        reshaped = tf.transpose(tf.reshape(decoded, [3, current_res_h, current_res_w]), [1, 2, 0])
         float_pixels = (tf.cast(reshaped, tf.float32) / 127.5) - 1.
         flipped = tf.image.random_flip_left_right(float_pixels)
         example['data'] = flipped
@@ -58,7 +58,7 @@ def make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res,
                                                      label.num_classes)
         return example
 
-    dataset = tf.data.TFRecordDataset([f for f in files if "res%d" % current_res in f])
+    dataset = tf.data.TFRecordDataset([f for f in files if "res%d" % current_res_w in f])
     if num_shards is not None:
         dataset = dataset.shard(num_shards, shard_index)
     dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=2000, count=epochs_per_res))
@@ -68,7 +68,7 @@ def make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res,
     return dataset
 
 
-def get_dataset(files, current_res, epochs_per_res, batch_size, label_list=None, num_shards=None, shard_index=None):
+def get_dataset(files, current_res_h, current_res_w, epochs_per_res, batch_size, label_list=None, num_shards=None, shard_index=None):
     """
     :param files_regex: path specifying which files to read (example: ./data/*.jpg)
     :return: dataset that reads those files
@@ -76,7 +76,7 @@ def get_dataset(files, current_res, epochs_per_res, batch_size, label_list=None,
     if ".png" in files[0] or ".jpg" in files[0]:
         dataset = make_raw_dataset(files)
     elif ".tfrecords" in files[0]:
-        dataset = make_record_dataset_nvidia(files, current_res, batch_size, epochs_per_res, label_list=label_list,
+        dataset = make_record_dataset_nvidia(files, current_res_h, current_res_w, batch_size, epochs_per_res, label_list=label_list,
                                              num_shards=num_shards, shard_index=shard_index)
     else:  # TODO: make compatible with list of patterns
         raise ValueError("files_regex looks for unknown file types")

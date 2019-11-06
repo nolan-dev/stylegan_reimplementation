@@ -192,7 +192,7 @@ def build_optimizers(hps):
 def build_data_iterator(hps, files, current_res_h, current_res_w, batch_size=None, label_list=None,
                         num_shards=None, shard_index=None):
     random.shuffle(files)
-    dataset = get_dataset(files, current_res_w, hps.epochs_per_res, batch_size,
+    dataset = get_dataset(files, current_res_h, current_res_w, hps.epochs_per_res, batch_size,
                           label_list=label_list, num_shards=None, shard_index=None)
     it = dataset.make_one_shot_iterator()
     return it
