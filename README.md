@@ -6,6 +6,11 @@ It is mostly original, but includes a couple functions from the official impleme
 
 To run, see the comments in start_training.sh (and then run start_training.sh).  This has only been tested in one environment, so feel free to create a github issue if you encounter a problem.  This model can handle non-square images and I plan on organizing and including the tools I've made/modified to generate datasets like that soonish.
 
+Blogs related to a tool I made to interact with StyleGAN models:
+
+https://towardsdatascience.com/animating-ganime-with-stylegan-part-1-4cf764578e
+https://towardsdatascience.com/animating-ganime-with-stylegan-the-tool-c5a2c31379d
+
 Original Paper: 
 Karras, T., Laine, S., and Aila, T.
 A style-based generator architecture for generative adversarial networks
