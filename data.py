@@ -74,7 +74,7 @@ def get_dataset(files, current_res_h, current_res_w, epochs_per_res, batch_size,
     :return: dataset that reads those files
     """
     if ".png" in files[0] or ".jpg" in files[0]:
-        dataset = make_raw_dataset(files)
+        dataset = make_raw_dataset(files, batch_size)
     elif ".tfrecords" in files[0]:
         dataset = make_record_dataset_nvidia(files, current_res_h, current_res_w, batch_size, epochs_per_res, label_list=label_list,
                                              num_shards=num_shards, shard_index=shard_index)
