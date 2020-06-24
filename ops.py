@@ -24,7 +24,6 @@ def adaptive_instance_norm(x, ys, yb):
     :return: (batch, h, w, c)
     """
     batch_size, height, width, channels = x.get_shape().as_list()
-    """
     x_mean, x_var = tf.nn.moments(x, axes=(1, 2))
 
     x_mean = tf.reshape(x_mean, [batch_size, 1, 1, channels])
@@ -38,6 +37,7 @@ def adaptive_instance_norm(x, ys, yb):
     epsilon = tf.constant(1e-8, dtype=x.dtype, name='epsilon')
     x *= tf.rsqrt(tf.reduce_mean(tf.square(x), axis=[2, 3], keepdims=True) + epsilon)
     x = tf.cast(x, orig_dtype)
+    """
     
     ys = tf.reshape(ys, [batch_size, 1, 1, channels])
     x *= ys
